@@ -102,31 +102,44 @@ async def cancel_slot(params, patient_id: str, event_id: str):
 def _build_stt_and_tts():
     """Pick cloud (Deepgram+Cartesia) or local (Whisper MLX+Piper) voice services.
 
-    Cloud wins when both its keys are set in .env; otherwise falls back to the
-    fully local, no-signup path. Imports are lazy so an unavailable path (e.g.
-    local packages still installing) doesn't break the other one.
-    """
-    if os.environ.get("DEEPGRAM_API_KEY") and os.environ.get("CARTESIA_API_KEY"):
-        from pipecat.services.cartesia.tts import CartesiaTTSService
-        from pipecat.services.deepgram.stt import DeepgramSTTService
+    STT and TTS are chosen independently:
 
-        logger.info("Voice services: Deepgram STT + Cartesia TTS (cloud)")
-        stt = DeepgramSTTService(api_key=os.environ["DEEPGRAM_API_KEY"])
+    - STT: Deepgram if DEEPGRAM_API_KEY is set. Local Whisper is NOT an option
+      on Apple Silicon here -- pipecat's whisper/stt.py module unconditionally
+      imports mlx_whisper on any Darwin arm64 host (even for the CPU-only
+      faster-whisper class), and mlx itself refuses to load below macOS 13.5.
+      There's no local STT path on a sub-13.5 Apple Silicon Mac through pipecat.
+    - TTS: Cartesia if CARTESIA_API_KEY is set, otherwise Piper (local, no
+      account needed, works fine -- it doesn't touch the whisper/mlx module).
+    """
+    if not os.environ.get("DEEPGRAM_API_KEY"):
+        raise RuntimeError(
+            "DEEPGRAM_API_KEY is required for STT on this machine: local Whisper "
+            "needs mlx, which refuses to load below macOS 13.5 (this host is 13.4.1)."
+        )
+    from pipecat.services.deepgram.stt import DeepgramSTTService
+
+    stt = DeepgramSTTService(api_key=os.environ["DEEPGRAM_API_KEY"])
+
+    if os.environ.get("CARTESIA_API_KEY"):
+        from pipecat.services.cartesia.tts import CartesiaTTSService
+
+        logger.info("Voice services: Deepgram STT (cloud) + Cartesia TTS (cloud)")
         tts = CartesiaTTSService(
             api_key=os.environ["CARTESIA_API_KEY"],
             voice_id=os.environ.get("CARTESIA_VOICE_ID", "79a125e8-cd45-4c13-8a67-188112f4dd22"),
         )
-        return stt, tts
+    else:
+        from pipecat.services.piper.tts import PiperTTSService
 
-    from pipecat.services.piper.tts import PiperTTSService
-    from pipecat.services.whisper.stt import MLXModel, WhisperSTTServiceMLX
+        logger.info("Voice services: Deepgram STT (cloud) + Piper TTS (local, no account)")
+        tts = PiperTTSService(
+            settings=PiperTTSService.Settings(
+                voice=os.environ.get("PIPER_VOICE") or "en_US-lessac-medium"
+            ),
+            download_dir=PIPER_MODELS_DIR,
+        )
 
-    logger.info("Voice services: Whisper MLX STT + Piper TTS (local, no accounts)")
-    stt = WhisperSTTServiceMLX(model=MLXModel.SMALL)
-    tts = PiperTTSService(
-        voice_id=os.environ.get("PIPER_VOICE", "en_US-lessac-medium"),
-        download_dir=PIPER_MODELS_DIR,
-    )
     return stt, tts
 
 
