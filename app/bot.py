@@ -12,8 +12,6 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.serializers.twilio import TwilioFrameSerializer
 from pipecat.services.anthropic.llm import AnthropicLLMService
-from pipecat.services.piper.tts import PiperTTSService
-from pipecat.services.whisper.stt import MLXModel, WhisperSTTServiceMLX
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 
 from app import calendar_tools, memory_store
@@ -101,6 +99,37 @@ async def cancel_slot(params, patient_id: str, event_id: str):
     await params.result_callback({"cancelled": True})
 
 
+def _build_stt_and_tts():
+    """Pick cloud (Deepgram+Cartesia) or local (Whisper MLX+Piper) voice services.
+
+    Cloud wins when both its keys are set in .env; otherwise falls back to the
+    fully local, no-signup path. Imports are lazy so an unavailable path (e.g.
+    local packages still installing) doesn't break the other one.
+    """
+    if os.environ.get("DEEPGRAM_API_KEY") and os.environ.get("CARTESIA_API_KEY"):
+        from pipecat.services.cartesia.tts import CartesiaTTSService
+        from pipecat.services.deepgram.stt import DeepgramSTTService
+
+        logger.info("Voice services: Deepgram STT + Cartesia TTS (cloud)")
+        stt = DeepgramSTTService(api_key=os.environ["DEEPGRAM_API_KEY"])
+        tts = CartesiaTTSService(
+            api_key=os.environ["CARTESIA_API_KEY"],
+            voice_id=os.environ.get("CARTESIA_VOICE_ID", "79a125e8-cd45-4c13-8a67-188112f4dd22"),
+        )
+        return stt, tts
+
+    from pipecat.services.piper.tts import PiperTTSService
+    from pipecat.services.whisper.stt import MLXModel, WhisperSTTServiceMLX
+
+    logger.info("Voice services: Whisper MLX STT + Piper TTS (local, no accounts)")
+    stt = WhisperSTTServiceMLX(model=MLXModel.SMALL)
+    tts = PiperTTSService(
+        voice_id=os.environ.get("PIPER_VOICE", "en_US-lessac-medium"),
+        download_dir=PIPER_MODELS_DIR,
+    )
+    return stt, tts
+
+
 def _extract_transcript(context: LLMContext) -> list[dict]:
     turns = []
     for msg in context.get_messages(truncate_large_values=True):
@@ -134,12 +163,7 @@ def build_call_worker(
         ),
     )
 
-    # Local STT/TTS -- no cloud accounts, runs on-device (Apple Silicon MLX + Piper).
-    stt = WhisperSTTServiceMLX(model=MLXModel.SMALL)
-    tts = PiperTTSService(
-        voice_id=os.environ.get("PIPER_VOICE", "en_US-lessac-medium"),
-        download_dir=PIPER_MODELS_DIR,
-    )
+    stt, tts = _build_stt_and_tts()
     llm = AnthropicLLMService(
         api_key=os.environ["ANTHROPIC_API_KEY"],
         settings=AnthropicLLMService.Settings(
