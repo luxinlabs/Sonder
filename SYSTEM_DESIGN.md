@@ -103,7 +103,7 @@ patient_id → { name, dob, last_visit_reason, meds, upcoming_appt, call_history
 
 ## Key risks
 
-- **Latency**: keep EdgeOne deployment region close to Twilio's media region; use fast STT/TTS (Deepgram, Cartesia/ElevenLabs turbo).
+- **Latency**: keep EdgeOne deployment region close to Twilio's media region. STT/TTS run locally (Whisper MLX + Piper, no cloud round-trip) to avoid extra vendor accounts and their added latency hop.
 - **Live OAuth failure on stage**: have the slot-grid fallback ready even if planning to use Google Calendar.
 - **ASR mishearing medical terms**: don't test that surface — keep the demo script inside booking/rescheduling.
 
